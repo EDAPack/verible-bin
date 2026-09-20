@@ -64,6 +64,38 @@ on:
         default: false
 
 jobs:
+  # WHY A PUSH NEEDS ITS OWN JOB HERE. `release` below is `if: != 'push'`, and
+  # this repo has no dev track to pick up the slack, so without this job a push
+  # runs NOTHING: the run completes in a second with a skipped job and a grey
+  # check, and a broken workflow, target name or build script stays invisible
+  # until the monthly cron fires four weeks later. That is what the first push
+  # to this repo actually did (run 35529925966).
+  #
+  # It is deliberately cheap and toolchain-free — the real repack takes minutes
+  # in a container and can only run on a schedule. This validates the
+  # declarations that make up almost all of a repack: which upstream asset,
+  # which layout, which files get injected. See scripts/check-repo.py, which
+  # the Forgejo workflow runs too so the two forges cannot drift.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test deps
+        run: pip install -q pyyaml pytest
+      - name: Shell scripts must parse
+        run: |
+          for f in scripts/*.sh tests/*.sh; do
+            bash -n "$f" || { echo "::error::$f has a syntax error"; exit 1; }
+            echo "OK: $f parses"
+          done
+      - name: Repo contracts
+        run: python3 scripts/check-repo.py
+      - name: Unit tests
+        run: python3 -m pytest tests -q
+
   # Newest upstream release we have not published yet. Skipped on push: a
   # recipe commit cannot change what upstream has released, and the shared
   # workflow refuses to publish from a push anyway.
