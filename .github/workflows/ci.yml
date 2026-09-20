@@ -1,0 +1,94 @@
+# RELEASE PATH -- read this before changing the `uses:` below.
+#
+# This repo does not publish anything itself. Its release pipeline is
+# edapack/edapack-common's reusable build-release workflow, and the gating for
+# it lives there (a release-authority switch plus a not-triggered-by-push
+# condition on the publish job). This repo belts-and-braces it: the only job
+# below is itself `if: github.event_name != 'push'`, so a mirror push reaches
+# no publish step even if the shared gate were to change. That is what makes
+# this repo safe to mirror between Forgejo and GitHub, since git-sync produces
+# exactly one kind of event, a push.
+#
+# THE PIN IS NOT IMMUTABLE. `@v1` is an actions/checkout@v4-style major-version
+# alias that edapack-common retargets forward, so it currently points at the tip
+# of that repo's `main`. Changing it -- or edapack-common moving it -- changes
+# this repo's release behaviour with no commit here.
+#
+# This block is also load-bearing for the sync itself, which is worth knowing
+# before deleting it as boilerplate. git-sync's inbound publish preflight reads
+# workflow files as TEXT and cannot follow a `uses:` into another repository, so
+# it sees a reference to a release pipeline and no evidence of a gate, and
+# refuses to pull the ref. Naming the switch here is how this file states the
+# thing the scanner is actually asking about; the gate really is on, it is just
+# one repository away. There is a counterpart check in
+# .forgejo/workflows/ci.yml that asserts the pin still resolves.
+
+name: CI
+# Thin caller of the shared edapack build pipeline. See
+# https://edapack.github.io (Developer Guide).
+#
+# SINGLE TRACK, AND WHY. Every other edapack tool repo has a dev track that
+# snapshots the upstream trunk. verible-bin has none, because it does not build
+# anything: it REPACKS upstream's published release assets (docs/plan.md). An
+# upstream commit with no release has no assets to download, so a trunk
+# snapshot is not a thing that can exist here. build-inputs.yaml therefore
+# points both `policy` and `release_policy` at latest-release, and only the
+# release track is wired up.
+#
+# CADENCE IS OURS, DELIBERATELY. Verible publishes several releases per week
+# (15 in the 20 days before this repo was created), every one flagged as a full
+# release. Mirroring that would be noise. The schedule below snapshots the
+# newest upstream release once a month; the shared workflow's release-track
+# gate ("is there an upstream tag we have not published?") makes a month with
+# no upstream movement a no-op. Run the workflow by hand for anything urgent.
+#
+# VERSIONING. The published tag is upstream's tag verbatim
+# (v0.0-4294-gc1d8f5e8). docs/plan.md floated an edapack-specific scheme, but
+# the shared release-track gate asks GitHub whether `v<upstream-version>` is
+# already released, so the tag is not ours to choose without forking that
+# logic. Mirroring the upstream tag also makes "which Verible is this?"
+# answerable without opening manifest.json, so the constraint and the good
+# answer agree here.
+on:
+  push:
+  schedule:
+    - cron: "0 12 1 * *"   # 1st of the month, 12:00 UTC
+  workflow_dispatch:
+    inputs:
+      core_ref:
+        description: "Repack a specific Verible release tag, e.g. v0.0-4294-gc1d8f5e8"
+        type: string
+      force:
+        description: "Republish even if we already released this upstream tag"
+        type: boolean
+        default: false
+
+jobs:
+  # Newest upstream release we have not published yet. Skipped on push: a
+  # recipe commit cannot change what upstream has released, and the shared
+  # workflow refuses to publish from a push anyway.
+  release:
+    if: github.event_name != 'push'
+    uses: edapack/edapack-common/.github/workflows/build-release.yml@v1
+    with:
+      package: verible-bin
+      track: release
+      # A repack needs no toolchain, so the image choice is about where the
+      # SMOKE TEST can run, not where a compiler lives: each Linux target is
+      # repacked on hardware that can execute what it just packed. manylinux is
+      # the fleet-standard image and costs nothing extra here.
+      #
+      # win64 is the exception -- there is no Windows runner in the shared
+      # workflow's matrix (its native path is macOS-shaped), and rearranging a
+      # zip needs no Windows. It is repacked on x86_64 Linux and ships
+      # unexecuted; scripts/build.sh still verifies all 11 .exe files survived
+      # the repack, and says out loud that it skipped the smoke test.
+      targets: |
+        [
+          {"name":"linux-x86_64","runs-on":"ubuntu-latest","kind":"docker","image":"quay.io/pypa/manylinux_2_28_x86_64"},
+          {"name":"linux-aarch64","runs-on":"ubuntu-24.04-arm","kind":"docker","image":"quay.io/pypa/manylinux_2_28_aarch64"},
+          {"name":"win64-x86_64","runs-on":"ubuntu-latest","kind":"docker","image":"quay.io/pypa/manylinux_2_28_x86_64"},
+          {"name":"macos-arm64","runs-on":"macos-14","kind":"native"}
+        ]
+      core_ref: ${{ inputs.core_ref || '' }}
+      force: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}

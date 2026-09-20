@@ -1,0 +1,288 @@
+# edapack/verible-bin -- Forgejo Actions.
+#
+# THIS FILE'S FIRST JOB IS TO EXIST. When .forgejo/workflows/ is absent the
+# Forgejo runner falls back to running .github/workflows/ -- the fallback is
+# DIRECTORY-level and evaluated per commit. One file here disarms the whole
+# repository.
+#
+# WHY THIS IS A CHECK AND NOT A MIRROR OF THE BUILD. The real pipeline
+# `docker run`s stock manylinux images and uses a macOS runner. There is no
+# Docker daemon on this runner and no macOS, so a shadow that pretended
+# otherwise would go red for reasons about the runner rather than about the
+# code.
+#
+# WHAT IT ACTUALLY GUARDS. .github/workflows/ci.yml here is a THIN CALLER of
+#
+#     edapack/edapack-common/.github/workflows/build-release.yml@v1
+#
+# so this repo has no publish step of its own to gate -- the gating lives in
+# edapack-common. The pin is worth staring at: `@v1` LOOKS immutable and is
+# not: it is an actions/checkout@v4-style major-version alias that gets
+# retargeted forward, so it currently points at the tip of edapack-common's
+# `main`. That is why the check below asserts the pin rather than the gate --
+# the gate is somewhere else, and what can break HERE is the reference to it.
+#
+# The remaining checks cover what is genuinely this repo's own: a repack is
+# nothing but a handful of contracts (which upstream asset, which layout, which
+# files get injected), and every one of them is a plain file that can be
+# validated without a toolchain.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check for internal identifiers in tracked files
+      # This repo is published to git.dvkit.org, so anything committed here is
+      # public. Internal host names, tailnet addresses and CGNAT-range IPs must
+      # not appear in tracked files -- if a build ever needs one it belongs in a
+      # repository secret, which is masked in logs.
+      run: |
+        pattern='perch-char\.ts\.net|\.ts\.net|a9550|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+'
+        if git grep -nIE "$pattern" -- . ':!.forgejo/workflows/ci.yml' ; then
+          echo "::error::internal identifier found in a tracked file (see matches above)"
+          exit 1
+        fi
+        echo "OK: no internal identifiers in tracked files"
+
+    - name: Install PyYAML
+      # Not present in catthehacker/ubuntu:act-22.04 by default. The checks
+      # below must read the workflows as YAML rather than by grepping: a gate
+      # that is only true textually is exactly the class of bug being guarded
+      # against. PEP 668 marks this image's interpreter externally-managed on
+      # some rebuilds, hence the escalation.
+      run: |
+        python3 -c 'import yaml' 2>/dev/null && { echo "PyYAML already present"; exit 0; }
+        python3 -m pip install -q pyyaml && exit 0
+        python3 -m pip install -q --break-system-packages pyyaml && exit 0
+        echo "::error::could not install PyYAML"; exit 1
+
+    - name: The shared release pipeline must still resolve
+      # A rename of edapack-common, of the workflow path, or of the `v1` alias
+      # breaks this repo's entire release pipeline, and GitHub reports it as
+      # "workflow was not found" HERE while edapack-common looks perfectly
+      # healthy. This asserts the half that lives in this repository.
+      #
+      # NOTE ON INDENTATION: the heredoc body sits at the SAME column as the
+      # rest of this run: block; outdenting it ends the block scalar early and
+      # silently corrupts the workflow.
+      run: |
+        python3 - <<'PY'
+        import pathlib, sys, yaml
+
+        WANT = "edapack/edapack-common/.github/workflows/build-release.yml@"
+        pins, local_pub = [], []
+
+        # Fragment-assembly so this scanner does not trip over its own source.
+        PUBLISH = tuple(a + b for a, b in (
+            ("softprops/action", "-gh-release"), ("actions/create", "-release"),
+            ("actions/upload", "-release-asset"), ("gh release", " create"),
+            ("peaceiris/actions", "-gh-pages"), ("actions/deploy", "-pages"),
+        ))
+
+        for wf in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
+            doc = yaml.safe_load(wf.read_text()) or {}
+            if doc.get("on", doc.get(True)) is None:
+                sys.exit(f"::error::{wf} has no `on:` block")
+            for name, job in (doc.get("jobs") or {}).items():
+                uses = job.get("uses") or ""
+                if uses.startswith(WANT):
+                    pins.append((str(wf), name, uses))
+                for step in job.get("steps") or []:
+                    text = (step.get("run") or "") + " " + (step.get("uses") or "")
+                    if any(m in text for m in PUBLISH):
+                        cond = str(step.get("if", "")) + " " + str(job.get("if", ""))
+                        local_pub.append((f"{wf}:{name}", cond.strip()))
+
+        if not pins:
+            print(f"::error::no job calls {WANT}<ref>")
+            print("::error::this repo is supposed to delegate its release pipeline;")
+            print("::error::if that changed on purpose, it now needs its own gate job")
+            sys.exit(1)
+
+        bad = False
+        for wf, name, uses in pins:
+            ref = uses.rsplit("@", 1)[1]
+            print(f"OK: {wf}:{name} -> {uses}")
+            if ref != "v1":
+                # Not a failure. A commit SHA here would be STRICTER than `v1`,
+                # which moves; flag it so a change of pinning strategy is
+                # visible rather than silent.
+                print(f"::warning::{wf}:{name} pins `{ref}`, not the expected `v1`")
+
+        # A caller that has grown its OWN publish step no longer inherits
+        # edapack-common's gating, and nothing central would fix it.
+        for label, cond in local_pub:
+            if "github.event_name != 'push'" not in cond or "authority" not in cond:
+                print(f"::error::{label} publishes locally without the full gate: "
+                      f"if={cond!r}")
+                bad = True
+
+        sys.exit(1 if bad else 0)
+        PY
+
+    - name: Shell scripts must parse
+      run: |
+        for f in scripts/*.sh tests/*.sh; do
+          bash -n "$f" || { echo "::error::$f has a syntax error"; exit 1; }
+          echo "OK: $f parses"
+        done
+
+    - name: Unit tests
+      # scripts/verible-behavior-diff.py parses `--print_rules_file` and
+      # `--helpfull` output to build the release notes' behavior section. Its
+      # parsers are pure functions over captured text, so they are testable
+      # here even though no verible binary exists on this runner.
+      run: |
+        python3 -m pip install -q pytest \
+          || python3 -m pip install -q --break-system-packages pytest \
+          || { echo "::error::could not install pytest"; exit 1; }
+        python3 -m pytest tests -q
+
+    - name: Repack contracts
+      # The four things that make this a package rather than a mirror of an
+      # upstream tarball. Each is a file, so each is checkable here.
+      run: |
+        python3 - <<'PY'
+        import pathlib, sys, yaml
+
+        errors = []
+
+        # 1. build-inputs.yaml -- what we repack, and how the version is found.
+        bi = yaml.safe_load(pathlib.Path("build-inputs.yaml").read_text())
+        if bi.get("schema") != "edapack.build-inputs/1":
+            errors.append("build-inputs.yaml: wrong or missing schema")
+        core = bi.get("core") or {}
+        if "verible" not in (core.get("repo") or ""):
+            errors.append("build-inputs.yaml: core.repo is not verible")
+        # Verible has no changelog and publishes empty release bodies, so a
+        # changelog PATH here would silently produce default notes forever.
+        if core.get("release_notes") != "gh-compare":
+            errors.append(
+                "build-inputs.yaml: core.release_notes must be 'gh-compare' -- "
+                "verible ships no changelog to slice")
+        # A repack has no trunk to snapshot: an upstream commit without a
+        # release has no assets. Both policies must name a released thing.
+        for key in ("policy", "release_policy"):
+            val = core.get(key) or ""
+            if val.startswith("branch:"):
+                errors.append(
+                    f"build-inputs.yaml: core.{key}={val!r} -- a branch has no "
+                    "release assets to repack")
+            if not val:
+                errors.append(f"build-inputs.yaml: core.{key} is required here")
+        if bi.get("dependencies"):
+            errors.append("build-inputs.yaml: a repack should have no dependencies")
+
+        # 2. release-ivpm.yaml -- the consumer contract. Without the PATH entry
+        #    an installed release puts nothing on PATH and the package is inert.
+        rel = pathlib.Path("scripts/release-ivpm.yaml")
+        own = pathlib.Path("ivpm.yaml")
+        if not rel.is_file():
+            errors.append("scripts/release-ivpm.yaml is missing")
+        else:
+            if own.is_file() and rel.read_bytes() == own.read_bytes():
+                errors.append("release-ivpm.yaml is a copy of the project ivpm.yaml")
+            doc = yaml.safe_load(rel.read_text()) or {}
+            pkg = doc.get("package") or {}
+            if pkg.get("name") != "verible-bin":
+                errors.append("release-ivpm.yaml: package.name must be verible-bin")
+            env = pkg.get("env") or []
+            if not any(e.get("name") == "PATH" and e.get("path-prepend") for e in env):
+                errors.append("release-ivpm.yaml: no PATH path-prepend entry")
+            if "default-dev" in rel.read_text():
+                errors.append("release-ivpm.yaml: consumers must not fetch build tooling")
+
+        # 3. skills -- staged with --strict, so a broken manifest fails the
+        #    real build late. Fail it here instead.
+        sm = yaml.safe_load(pathlib.Path("scripts/skill-manifest.yaml").read_text())
+        skills = sm.get("skills") or []
+        if not skills:
+            errors.append("skill-manifest.yaml lists no skills (staged --strict)")
+        for s in skills:
+            d = pathlib.Path(s["path"])
+            md = d / "SKILL.md"
+            if not md.is_file():
+                errors.append(f"skill {s['name']}: missing {md}")
+                continue
+            text = md.read_text()
+            if not text.startswith("---"):
+                errors.append(f"skill {s['name']}: SKILL.md has no frontmatter")
+                continue
+            fm = yaml.safe_load(text.split("---", 2)[1]) or {}
+            for key in ("name", "description", "version"):
+                if not fm.get(key):
+                    errors.append(f"skill {s['name']}: frontmatter missing {key}")
+            if fm.get("name") != s["name"]:
+                errors.append(
+                    f"skill {s['name']}: frontmatter name {fm.get('name')!r} "
+                    "does not match the manifest")
+            for ref in (d / "references").glob("*.md"):
+                if ref.name not in text:
+                    print(f"::warning::{ref} is not referenced from {md}")
+
+        # 4. the smoke-test fixture the build gates on must exist, and so must
+        #    the release-notes hook edapack-common discovers by PATH alone --
+        #    rename it and the release body silently loses a section, with
+        #    nothing failing anywhere.
+        for p in ("tests/smoke.sv", "tests/run_smoke_test.sh", "scripts/export.envrc",
+                  "scripts/release-notes-hook.sh", "scripts/verible-behavior-diff.py"):
+            if not pathlib.Path(p).is_file():
+                errors.append(f"missing {p}")
+        hook = pathlib.Path("scripts/release-notes-hook.sh")
+        if hook.is_file() and "verible-behavior-diff.py" not in hook.read_text():
+            errors.append("release-notes-hook.sh no longer calls the behavior diff")
+
+        for e in errors:
+            print(f"::error::{e}")
+        if errors:
+            sys.exit(1)
+        print("OK: repack contracts intact")
+        PY
+
+    - name: Build targets must agree with the repack script
+      # The matrix target names are not labels: scripts/build.sh switches on
+      # them to pick the upstream asset. A target the script does not know is a
+      # build failure minutes into a release run; catch it in seconds here.
+      run: |
+        python3 - <<'PY'
+        import json, pathlib, re, sys, yaml
+
+        wf = yaml.safe_load(pathlib.Path(".github/workflows/ci.yml").read_text())
+        script = pathlib.Path("scripts/build.sh").read_text()
+        known = set(re.findall(r"^\s{4}(linux-[a-z0-9_]+|macos-[a-z0-9]+|win64-[a-z0-9_]+)\)",
+                               script, re.M))
+        if not known:
+            sys.exit("::error::could not find the target case arms in scripts/build.sh")
+
+        seen, bad = set(), False
+        for name, job in (wf.get("jobs") or {}).items():
+            raw = ((job.get("with") or {}).get("targets") or "").strip()
+            if not raw:
+                continue
+            for t in json.loads(raw):
+                seen.add(t["name"])
+                if t["name"] not in known:
+                    print(f"::error::job {name}: target {t['name']!r} has no arm "
+                          f"in scripts/build.sh (knows: {sorted(known)})")
+                    bad = True
+        missing = known - seen
+        if missing:
+            # Not fatal: an arm can outlive a target on purpose (a platform
+            # temporarily dropped from CI). Say so rather than hide it.
+            print(f"::warning::scripts/build.sh handles targets nothing builds: "
+                  f"{sorted(missing)}")
+        if bad:
+            sys.exit(1)
+        print(f"OK: {len(seen)} build targets all handled: {sorted(seen)}")
+        PY

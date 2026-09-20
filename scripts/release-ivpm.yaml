@@ -1,0 +1,16 @@
+# Consumer-facing ivpm manifest, staged into the release tarball as ivpm.yaml
+# by edapack-common's ec_stage_release_ivpm.
+#
+# This is NOT the project's ivpm.yaml. That one describes how to *build*
+# verible-bin (edapack-common, test deps); shipping it would make anyone
+# installing a release fetch all of that just to run a linter.
+#
+# What a consumer of an installed release needs is exactly one thing: the
+# bundled executables on PATH. Verible's tools are self-contained static
+# binaries with no runtime Python, no plugin search path, and no data files.
+package:
+  name: verible-bin
+
+  env:
+  - name: PATH
+    path-prepend: "${IVPM_PACKAGES}/verible-bin/bin"

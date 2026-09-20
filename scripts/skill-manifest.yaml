@@ -1,0 +1,11 @@
+# Agent Skills shipped in the verible-bin release tarball.
+# Consumed by edapack-common's stage-skills.py from scripts/build.sh.
+# See ../SKILL_DEVELOPMENT_PROCESS.md in the edapack workspace for the process.
+#
+# One skill covers the whole verible-verilog-* family: they share a front end,
+# a --flagfile convention and a project/file-list model, and an agent choosing
+# between "lint this" and "format this" is making one decision, not two.
+skills:
+  - name: verible
+    path: skills/verible
+    binaries: [verible-verilog-lint, verible-verilog-format, verible-verilog-syntax, verible-verilog-ls]

@@ -1,0 +1,30 @@
+# Input components for verible-bin, resolved by edapack-common's
+# resolve-inputs.py. See https://edapack.github.io (Developer Guide → build-inputs).
+#
+# Comments are kept in this header (not inline in the body) because the
+# published @v1 resolver's YAML parser neither strips trailing inline comments
+# nor skips comment lines when deciding a block's type.
+#
+#   core verible    - this package REPACKS upstream's prebuilt binaries rather
+#                     than building from source (see docs/plan.md), so both
+#                     policies point at a published release: there is nothing to
+#                     build from a branch tip, and a commit with no release has
+#                     no assets to download. `policy` and `release_policy` are
+#                     deliberately identical; CI only runs the release track.
+#   no version_probe - latest-release yields a version from the tag itself
+#                     (v0.0-4294-gc1d8f5e8 -> 0.0-4294-gc1d8f5e8).
+#   release_notes   - gh-compare, not a changelog path: Verible has no
+#                     changelog file AND publishes empty release bodies (40
+#                     consecutive releases, every one zero-length). The body is
+#                     built from the pull requests merged since the upstream ref
+#                     of our previous release. scripts/release-notes-hook.sh
+#                     adds the part that can only come from the binaries.
+#   no dependencies  - a repack has no build inputs beyond the upstream assets.
+schema: edapack.build-inputs/1
+
+core:
+  name: verible
+  repo: https://github.com/chipsalliance/verible
+  policy: latest-release
+  release_policy: latest-release
+  release_notes: gh-compare
