@@ -67,7 +67,10 @@ verible-verilog-kythe-kzip-writer
 verible-patch-tool
 "
 
-work="$(mktemp -d)"
+# Explicit template: GNU mktemp defaults one, BSD mktemp's handling of a bare
+# `-d` varies by version, and this script's whole job is to run on the macOS
+# runner as well as in a manylinux container. A template is portable on both.
+work="$(mktemp -d "${TMPDIR:-/tmp}/verible-smoke.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 echo "verible-bin smoke test (bin_dir=${bin_dir:-<PATH>})"

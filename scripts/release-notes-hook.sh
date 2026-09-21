@@ -35,7 +35,9 @@ repo="${EC_REPO:-}"
 
 log() { printf '[hook] %s\n' "$*" >&2; }
 
-work="$(mktemp -d)"
+# Explicit template — portable across GNU and BSD mktemp. This runs on the
+# publish runner (Linux), but it is documented as runnable by hand.
+work="$(mktemp -d "${TMPDIR:-/tmp}/verible-notes.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 # The platform we can actually execute on the publish runner (ubuntu-latest).

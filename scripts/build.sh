@@ -119,8 +119,15 @@ esac
 
 # Exactly one top-level directory is expected; anything else means upstream
 # changed the archive shape and the strip below would silently do the wrong thing.
-top_count="$(find "$unpack_dir" -mindepth 1 -maxdepth 1 | wc -l)"
-[ "$top_count" = "1" ] || ec_die "expected 1 top-level entry in $asset, found $top_count"
+#
+# `| tr -d '[:space:]'` is load-bearing, not tidiness. BSD wc pads its count to
+# a fixed width, so on the macOS runner this reads "       1" and a string
+# comparison against "1" fails -- the build died with "expected 1 top-level
+# entry, found        1", having found exactly one. GNU wc does not pad, so it
+# passes on every Linux target and on a macOS repack done from Linux. Use a
+# numeric comparison too, so a stray space can never resurrect this.
+top_count="$(find "$unpack_dir" -mindepth 1 -maxdepth 1 | wc -l | tr -d '[:space:]')"
+[ "$top_count" -eq 1 ] || ec_die "expected 1 top-level entry in $asset, found $top_count"
 top="$(find "$unpack_dir" -mindepth 1 -maxdepth 1)"
 [ -d "$top" ] || ec_die "top-level entry in $asset is not a directory: $top"
 
@@ -166,8 +173,8 @@ ec_log "all 11 verible executables present in bin/"
 
 # Guard against an unnoticed extra: if upstream adds a tool, the skill and the
 # README should learn about it rather than it shipping unannounced.
-shipped="$(find "$release_root/bin" -maxdepth 1 -type f | wc -l)"
-[ "$shipped" = "11" ] || ec_log "WARNING: bin/ holds $shipped files, expected 11 — did upstream add a tool?"
+shipped="$(find "$release_root/bin" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+[ "$shipped" -eq 11 ] || ec_log "WARNING: bin/ holds $shipped files, expected 11 — did upstream add a tool?"
 
 # --- smoke test (only where this runner can execute the target) -------------
 host_os="$(uname -s | tr '[:upper:]' '[:lower:]')"

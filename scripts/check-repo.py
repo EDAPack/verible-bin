@@ -257,9 +257,59 @@ def check_targets():
         print("OK: {} build targets all handled: {}".format(len(seen), sorted(seen)))
 
 
+# --------------------------------------------------------------------------- #
+# 5. Shell portability: these scripts run on BSD userland too
+# --------------------------------------------------------------------------- #
+# scripts/build.sh and tests/run_smoke_test.sh execute on the macos-14 runner as
+# well as in manylinux containers, and BSD coreutils are not GNU coreutils. This
+# is not hypothetical tidiness — it cost a release run:
+#
+#   [edapack] ERROR: expected 1 top-level entry in ...macOS.tar.gz, found        1
+#
+# BSD `wc` pads its count to a fixed width, so `[ "$(... | wc -l)" = "1" ]` is a
+# string comparison against "       1" and fails, having counted exactly one.
+# GNU wc does not pad, so it passed on every Linux target AND on a macOS repack
+# performed from Linux — there is no way to catch it except on a Mac, or here.
+_PORTABILITY = [
+    (re.compile(r"wc\s+-[lwc]\b(?!.*tr\s+-d)"),
+     "`wc` output compared without stripping whitespace — BSD wc pads its "
+     "count; pipe through `tr -d '[:space:]'` and compare with -eq"),
+    (re.compile(r"mktemp\s+-d\s*(?:$|[;&|)])", re.M),
+     "`mktemp -d` with no template — portable only with an explicit "
+     '"$TMPDIR/name.XXXXXX" template'),
+    (re.compile(r"\bsed\s+-i\s+(?!\.)(?!['\"]{2})"),
+     "`sed -i` without a backup suffix — BSD sed requires one"),
+    (re.compile(r"\breadlink\s+-f\b"), "`readlink -f` is GNU-only"),
+    (re.compile(r"\bdate\s+-d\b"), "`date -d` is GNU-only (BSD uses -v/-j -f)"),
+    (re.compile(r"\bstat\s+-c\b"), "`stat -c` is GNU-only (BSD uses -f)"),
+    (re.compile(r"\bgrep\s+-P\b"), "`grep -P` is GNU-only"),
+    (re.compile(r"\bsort\s+-V\b"), "`sort -V` is GNU-only"),
+    (re.compile(r"\bdeclare\s+-A\b"),
+     "associative arrays need bash 4; macOS ships bash 3.2"),
+]
+
+
+def check_shell_portability():
+    scripts = sorted(pathlib.Path("scripts").glob("*.sh")) + \
+        sorted(pathlib.Path("tests").glob("*.sh"))
+    clean = True
+    for path in scripts:
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if not code.strip():
+                continue
+            for pattern, why in _PORTABILITY:
+                if pattern.search(code):
+                    error("{}:{}: {}".format(path, lineno, why))
+                    clean = False
+    if clean:
+        print("OK: {} shell scripts are BSD/bash-3.2 safe".format(len(scripts)))
+
+
 def main():
     check_release_pipeline()
     check_push_is_covered()
+    check_shell_portability()
     check_build_inputs()
     check_release_ivpm()
     check_skills()
